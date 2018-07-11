@@ -3,6 +3,7 @@
 
 #include "stdafx.h"
 #include <opencv2/opencv.hpp>
+#include "core.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -86,6 +87,34 @@ int main()
 		ICP_new_pts.at<float>(i, 1) = new_pt_vec[i * NEW_DOWN_SAMPLE_RATE].y;
 	}
 
+	// 调试用
+	//ofstream ref_data_file("ref.txt", ios_base::out);
+	//ofstream new_data_file("new.txt", ios_base::out);
+
+	//for (int r = 0; r < ICP_ref_pts.rows; r++)
+	//{
+	//	for (int c = 0; c < ICP_ref_pts.cols; c++)
+	//	{
+	//		float data = ICP_ref_pts.at<float>(r, c);  //读取数据，at<type> - type 是矩阵元素的具体数据格式  
+	//		ref_data_file << data << "\t";   //每列数据用 tab 隔开  
+	//	}
+	//	ref_data_file << endl;  //换行  
+	//}
+	//ref_data_file.flush();
+	//ref_data_file.close();
+
+	//for (int r = 0; r < ICP_new_pts.rows; r++)
+	//{
+	//	for (int c = 0; c < ICP_new_pts.cols; c++)
+	//	{
+	//		float data = ICP_new_pts.at<float>(r, c);  //读取数据，at<type> - type 是矩阵元素的具体数据格式  
+	//		new_data_file << data << "\t";   //每列数据用 tab 隔开  
+	//	}
+	//	new_data_file << endl;  //换行  
+	//}
+	//new_data_file.flush();
+	//new_data_file.close();
+
 	/*cout << "ICP_ref_pts" << endl;
 	cout << ICP_ref_pts << endl;
 
@@ -136,13 +165,124 @@ int main()
 
 	// 2. ICP迭代
 	// 2.1 准备
-	float pre_err = FLT_MAX;
+	float pre_err = FLT_MAX;	// 迭代需要的误差量存储1
+	float now_err = 0;			// 迭代需要的误差量存储2
+	float delta_err;
+	Mat res_ind, res_dist;
+	int res_ind_int = 0;
+	float near_x, near_y;
+	Mat nearest_pts_from_ref = Mat(ICP_new_pts.rows, 2, CV_32FC1);
+	Mat mean_new = Mat(1, 2, CV_32FC1);		// ICP 计算过程中求解各个步骤的R、t的中间量，待匹配点云的重心
+	Mat mean_near = Mat(1, 2, CV_32FC1);	// ICP 计算过程中求解各个步骤的R、t的中间量，迭代中点云的重心
+	Mat AXY, BXY; // 中间量
+	Mat H, U, S, Vt; // 中间量
+	Mat Mid_eye = Mat::eye(2, 2, CV_32FC1);
+	Mat temp_new_pts;
+	Mat R, t; // 计算结果
 
+	
+
+
+	// 2.2 迭代开始
 	for (int iter_num = 0; iter_num < ITER_MAX; iter_num++)
 	{
-		;
+		now_err = 0;
+
+
+		for (int i = 0; i < ICP_new_pts.rows; i++)
+		{
+			My_Kdtree.knnSearch(ICP_new_pts.row(i), res_ind, res_dist, 1, flann::SearchParams(-1));
+			res_ind_int = res_ind.at<int>(0, 0); // 确认过变量类型应该是对的
+			near_x = ICP_ref_pts.at<float>(res_ind_int, 0);
+			near_y = ICP_ref_pts.at<float>(res_ind_int, 1);
+			nearest_pts_from_ref.at<float>(i, 0) = near_x;
+			nearest_pts_from_ref.at<float>(i, 1) = near_y;
+
+			now_err = now_err + sqrtf((ICP_new_pts.at<float>(i, 0) - near_x) * (ICP_new_pts.at<float>(i, 0) - near_x) +
+									  (ICP_new_pts.at<float>(i, 1) - near_y) * (ICP_new_pts.at<float>(i, 1) - near_y));
+		}
+
+		cout << "nearest: " << endl;
+		cout << nearest_pts_from_ref << endl;
+
+		delta_err = abs(now_err - pre_err);
+
+		if (delta_err < ITER_THRESH)
+		{
+			break;
+		}
+		else
+			pre_err = now_err;
+
+		// 求重心，注意：cv::mean 的返回值是一个 cv::scalar 它由四个元素构成，但是我们只用到第一个，所以后面多了个[0]
+		mean_new.at<float>(0, 0) = mean(ICP_new_pts.col(0))[0];
+		mean_new.at<float>(0, 1) = mean(ICP_new_pts.col(1))[0];
+		mean_near.at<float>(0, 0) = mean(nearest_pts_from_ref.col(0))[0];
+		mean_near.at<float>(0, 1) = mean(nearest_pts_from_ref.col(1))[0];
+
+
+		cout << "mean_new:" << endl;
+		cout << mean_new << endl;
+
+		cout << "mean_near" << endl;
+		cout << mean_near << endl;
+
+
+		// 所有点按重心归一化
+		AXY = ICP_new_pts - repeat(mean_new, ICP_new_pts.rows, 1);
+		BXY = nearest_pts_from_ref - repeat(mean_near, nearest_pts_from_ref.rows, 1);
+
+		cout << "AXY:" << endl;
+		cout << AXY << endl;
+
+		cout << "BXY:" << endl;
+		cout << BXY << endl;
+
+
+
+		// 求出待SVD分解的H矩阵
+		H = AXY.t() * BXY;
+		SVD::compute(H, S, U, Vt);
+
+
+		cout << "H:" << endl;
+		cout << H << endl;
+
+		cout << "U" << endl;
+		cout << U << endl;
+
+		cout << "Vt" << endl;
+		cout << Vt << endl;
+
+
+		Mid_eye.at<float>(1, 1) = determinant(Vt.t()*U.t());
+		R = Vt.t() * Mid_eye * U.t();
+		t = mean_near.t() - R * mean_new.t();
+
+		cout << "R:" << endl;
+		cout << R << endl;
+
+		cout << "t" << endl;
+		cout << t << endl;
+
+		transpose((R * ICP_new_pts.t() + repeat(t, 1, ICP_new_pts.rows)), temp_new_pts);
+		temp_new_pts.copyTo(ICP_new_pts);
+
+		cout << "ICP_new_pts: " << endl;
+		cout << ICP_new_pts << endl;
+
 	}
 
+	cout << "R:" << endl;
+	cout << R << endl;
+
+	cout << "t" << endl;
+	cout << t << endl;
+
+	cout << "now_err" << endl;
+	cout << now_err << endl;
+
+	cin.get();
 
     return 0;
 }
