@@ -22,3 +22,6 @@ knife2.bmp
 *.ilk
 *.exe
 ref_points.txt
+ICP_new_pts.txt
+new.txt
+ref.txt
